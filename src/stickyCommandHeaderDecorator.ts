@@ -63,6 +63,8 @@ export class StickyCommandHeaderDecorator extends TerminalDecorator {
     let viewport: HTMLElement | null = null
     let controlSequenceState: ControlSequenceState = 'normal'
     let inputCapture: StickyCommandHeaderInputCapture | null = null
+    let inputCaptureMiddlewareStack: any = null
+    let inputSubscription: any = null
 
     const isAtBottom = (): boolean => {
       if (!viewport) {
@@ -229,14 +231,50 @@ export class StickyCommandHeaderDecorator extends TerminalDecorator {
       }
     }
 
-    const middlewareStack = terminal.session?.middleware
+    const detachInputCapture = (): void => {
+      if (
+        inputCapture &&
+        inputCaptureMiddlewareStack &&
+        typeof inputCaptureMiddlewareStack.remove === 'function'
+      ) {
+        inputCaptureMiddlewareStack.remove(inputCapture)
+      }
 
-    if (middlewareStack && typeof middlewareStack.push === 'function') {
-      inputCapture = new StickyCommandHeaderInputCapture(processTerminalInput)
-      middlewareStack.push(inputCapture)
-    } else {
-      const inputSubscription = terminal.input$.subscribe(processTerminalInput)
+      inputCapture = null
+      inputCaptureMiddlewareStack = null
+
+      if (inputSubscription) {
+        inputSubscription.unsubscribe()
+        inputSubscription = null
+      }
+    }
+
+    const attachInputCapture = (): void => {
+      detachInputCapture()
+
+      const middlewareStack = terminal.session?.middleware
+
+      if (middlewareStack && typeof middlewareStack.push === 'function') {
+        inputCapture = new StickyCommandHeaderInputCapture(processTerminalInput)
+        inputCaptureMiddlewareStack = middlewareStack
+        middlewareStack.push(inputCapture)
+        return
+      }
+
+      inputSubscription = terminal.input$.subscribe(processTerminalInput)
       this.subscribeUntilDetached(terminal, inputSubscription)
+    }
+
+    attachInputCapture()
+
+    if (terminal.sessionChanged$) {
+      const sessionChangedSubscription = terminal.sessionChanged$.subscribe(() => {
+        pendingInput = ''
+        controlSequenceState = 'normal'
+        attachInputCapture()
+      })
+
+      this.subscribeUntilDetached(terminal, sessionChangedSubscription)
     }
 
     const alternateScreenSubscription = terminal.alternateScreenActive$.subscribe(active => {
@@ -261,9 +299,7 @@ export class StickyCommandHeaderDecorator extends TerminalDecorator {
     window.setTimeout(findViewport, 500)
 
     this.cleanup.set(terminal, () => {
-      if (inputCapture && middlewareStack && typeof middlewareStack.remove === 'function') {
-        middlewareStack.remove(inputCapture)
-      }
+      detachInputCapture()
 
       if (viewport) {
         viewport.removeEventListener('scroll', updateHeader)
