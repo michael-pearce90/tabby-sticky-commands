@@ -1,6 +1,6 @@
-﻿{
+{
   "name": "tabby-sticky-command-header",
-  "version": "0.0.0",
+  "version": "0.0.1",
   "description": "Experimental Tabby terminal plugin for a VS Code-style sticky command header.",
   "private": true,
   "keywords": [
@@ -10,5 +10,28 @@
     "ssh",
     "sticky-scroll"
   ],
-  "license": "MIT"
+  "main": "dist/index.js",
+  "typings": "dist/index.d.ts",
+  "scripts": {
+    "build": "webpack --progress --color",
+    "watch": "webpack --progress --color --watch"
+  },
+  "files": [
+    "dist"
+  ],
+  "license": "MIT",
+  "devDependencies": {
+    "@angular/animations": "15.2.10",
+    "@angular/common": "15.2.10",
+    "@angular/core": "15.2.10",
+    "@types/node": "^20.11.30",
+    "@types/webpack-env": "^1.18.4",
+    "rxjs": "^7.5.0",
+    "tabby-core": "1.0.231-nightly.0",
+    "tabby-terminal": "1.0.231-nightly.0",
+    "ts-loader": "^9.5.1",
+    "typescript": "^4.9.5",
+    "webpack": "^5.90.3",
+    "webpack-cli": "^5.1.4"
+  }
 }
