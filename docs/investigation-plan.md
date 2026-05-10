@@ -1,4 +1,4 @@
-﻿# Technical Spike Plan
+﻿# Technical Investigation Plan
 
 ## Question
 
@@ -25,3 +25,4 @@ Can a Tabby plugin provide a useful sticky command header without requiring chan
 ## Decision point
 
 If the plugin API cannot access enough terminal scroll state, move the proposal towards a Tabby core PR instead of forcing a brittle plugin.
+

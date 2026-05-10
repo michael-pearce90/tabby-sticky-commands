@@ -6,7 +6,7 @@ The goal is to keep the current command visible while scrolling through long ter
 
 ## Status
 
-Early technical spike. Not ready for daily use.
+Early technical investigation. Not ready for daily use.
 
 ## Initial target
 
@@ -31,3 +31,4 @@ Show a sticky command/prompt header at the top of the terminal viewport so users
 ## Related Tabby feature request
 
 https://github.com/Eugeny/tabby/issues/11256
+
