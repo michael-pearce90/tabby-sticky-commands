@@ -68,6 +68,23 @@ The current implementation has been manually verified for:
 
 Show a sticky command header at the top of the terminal viewport so users can see which command produced the output they are reading, and copy the retained output for the current command when needed.
 
+## Operator-grade target
+
+The intended end state is copyable command evidence that is exact enough for Mike as the operator and ChatGPT as the reviewer.
+
+Operator-grade behaviour means:
+
+- the sticky header follows the command whose output is currently being viewed, not only the newest command;
+- `Copy output` copies the visible command block, including the correct command label and only that block's retained output;
+- heredoc and multiline wrappers keep the opening command label, such as `bash <<'SH'`, and do not label the block as the delimiter;
+- copied output preserves useful evidence such as warnings, URLs, JSON, logs, prompts, errors, command results, and section headings;
+- copied output removes obvious terminal animation noise and carriage-return/progress rewrites where safe;
+- copied text clearly says when output has been truncated;
+- latest-command copying remains as a safe fallback when scroll mapping is unavailable;
+- raw terminal input and output are not logged or persisted;
+- memory stays bounded;
+- manual checks cover CMD, PowerShell, SSH, typed commands, pasted commands, long output, multiple command blocks, tab switching, and plugin restart.
+
 ## How it works
 
 The plugin adds a terminal decorator that overlays a small sticky header above the terminal viewport.
