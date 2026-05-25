@@ -26,6 +26,75 @@ interface CommandBlock {
 const MAX_COMMAND_BLOCKS = 20
 const MAX_OUTPUT_CHARS_PER_BLOCK = 256 * 1024
 const COPY_STATUS_TIMEOUT_MS = 1800
+const BRAILLE_SPINNER_FRAMES = new Set(['⣾', '⣽', '⣻', '⢿', '⡿', '⣟', '⣯', '⣷'])
+const ASCII_SPINNER_FRAMES = new Set(['|', '/', '-', '\\'])
+
+const normaliseCarriageReturnsForCopy = (output: string): string => {
+  const lines: string[] = []
+  let currentLine = ''
+
+  for (let index = 0; index < output.length; index++) {
+    const char = output[index]
+
+    if (char === '\r') {
+      if (output[index + 1] === '\n') {
+        lines.push(currentLine)
+        currentLine = ''
+        index++
+        continue
+      }
+
+      currentLine = ''
+      continue
+    }
+
+    if (char === '\n') {
+      lines.push(currentLine)
+      currentLine = ''
+      continue
+    }
+
+    currentLine += char
+  }
+
+  lines.push(currentLine)
+
+  return lines.join('\n')
+}
+
+const isBrailleSpinnerOnlyLine = (line: string): boolean => {
+  return BRAILLE_SPINNER_FRAMES.has(line.trim())
+}
+
+const isAsciiSpinnerOnlyLine = (line: string): boolean => {
+  return ASCII_SPINNER_FRAMES.has(line.trim())
+}
+
+const isAsciiSpinnerNoise = (lines: string[], index: number): boolean => {
+  if (!isAsciiSpinnerOnlyLine(lines[index])) {
+    return false
+  }
+
+  const cluster = [lines[index].trim()]
+
+  for (let previous = index - 1; previous >= 0 && isAsciiSpinnerOnlyLine(lines[previous]); previous--) {
+    cluster.push(lines[previous].trim())
+  }
+
+  for (let next = index + 1; next < lines.length && isAsciiSpinnerOnlyLine(lines[next]); next++) {
+    cluster.push(lines[next].trim())
+  }
+
+  return cluster.length >= 3 || new Set(cluster).size >= 2
+}
+
+const formatOutputForCopy = (output: string): string => {
+  const lines = normaliseCarriageReturnsForCopy(output).split('\n')
+
+  return lines
+    .filter((line, index) => !isBrailleSpinnerOnlyLine(line) && !isAsciiSpinnerNoise(lines, index))
+    .join('\n')
+}
 
 class StickyCommandHeaderCapture extends SessionMiddleware {
   constructor (
@@ -356,7 +425,7 @@ export class StickyCommandHeaderDecorator extends TerminalDecorator {
         return
       }
 
-      text = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n')
+      text = text.replace(/\r\n/g, '\n')
       currentBlock.output += text
 
       if (currentBlock.output.length > MAX_OUTPUT_CHARS_PER_BLOCK) {
@@ -403,7 +472,7 @@ export class StickyCommandHeaderDecorator extends TerminalDecorator {
       const copiedText = [
         `$ ${block.command}`,
         block.truncated ? '[Output truncated to the most recent retained text]' : '',
-        block.output.trimEnd(),
+        formatOutputForCopy(block.output).trimEnd(),
       ].filter(Boolean).join('\n')
 
       try {
