@@ -21,12 +21,37 @@ interface CommandBlock {
   output: string
   active: boolean
   truncated: boolean
+  startMarker?: XtermMarker
 }
 
 interface HeredocState {
   delimiter: string
   allowLeadingTabs: boolean
 }
+
+interface XtermMarker {
+  line: number
+  isDisposed?: boolean
+  dispose?: () => void
+}
+
+interface XtermBuffer {
+  type?: string
+  viewportY?: number
+  length?: number
+}
+
+interface XtermLike {
+  buffer?: {
+    active?: XtermBuffer
+  }
+  registerMarker?: (cursorYOffset?: number) => XtermMarker | undefined
+}
+
+type CommandBlockResolution =
+  | { kind: 'block', block: CommandBlock }
+  | { kind: 'fallback', block: CommandBlock }
+  | { kind: 'uncertain' }
 
 const MAX_COMMAND_BLOCKS = 20
 const MAX_OUTPUT_CHARS_PER_BLOCK = 256 * 1024
@@ -285,30 +310,186 @@ export class StickyCommandHeaderDecorator extends TerminalDecorator {
     let captureMiddlewareStack: any = null
     let inputSubscription: any = null
 
+    const disposeBlockMarkers = (block: CommandBlock): void => {
+      block.startMarker?.dispose?.()
+      block.startMarker = undefined
+    }
+
+    const clearCommandBlocks = (): void => {
+      commandBlocks.forEach(disposeBlockMarkers)
+      commandBlocks = []
+    }
+
+    const trimCommandBlocks = (): void => {
+      if (commandBlocks.length <= MAX_COMMAND_BLOCKS) {
+        return
+      }
+
+      const removedBlocks = commandBlocks.slice(0, commandBlocks.length - MAX_COMMAND_BLOCKS)
+
+      removedBlocks.forEach(disposeBlockMarkers)
+      commandBlocks = commandBlocks.slice(-MAX_COMMAND_BLOCKS)
+    }
+
+    const getXterm = (): XtermLike | null => {
+      const xterm = terminal.frontend?.xterm
+
+      if (!xterm || typeof xterm !== 'object') {
+        return null
+      }
+
+      return xterm as XtermLike
+    }
+
+    const getNormalXtermBuffer = (): XtermBuffer | null => {
+      const buffer = getXterm()?.buffer?.active
+
+      if (!buffer || buffer.type !== 'normal') {
+        return null
+      }
+
+      return buffer
+    }
+
+    const registerBlockStartMarker = (cursorYOffset = 0): XtermMarker | undefined => {
+      if (alternateScreenActive || !getNormalXtermBuffer()) {
+        return undefined
+      }
+
+      const xterm = getXterm()
+      const registerMarker = xterm?.registerMarker
+
+      if (typeof registerMarker !== 'function') {
+        return undefined
+      }
+
+      try {
+        return registerMarker.call(xterm, cursorYOffset)
+      } catch {
+        return undefined
+      }
+    }
+
+    const getViewportTopLine = (): number | null => {
+      if (alternateScreenActive) {
+        return null
+      }
+
+      const viewportY = getNormalXtermBuffer()?.viewportY
+
+      return typeof viewportY === 'number' && Number.isFinite(viewportY) ? viewportY : null
+    }
+
+    const getBufferLength = (): number | null => {
+      const length = getNormalXtermBuffer()?.length
+
+      return typeof length === 'number' && Number.isFinite(length) && length >= 0 ? length : null
+    }
+
+    const getMarkerLine = (marker: XtermMarker | undefined): number | null => {
+      if (!marker || marker.isDisposed || marker.line < 0) {
+        return null
+      }
+
+      return Number.isFinite(marker.line) ? marker.line : null
+    }
+
     const isAtBottom = (): boolean => {
       if (!viewport) {
-        return true
+        return false
       }
 
       return viewport.scrollTop + viewport.clientHeight >= viewport.scrollHeight - 4
     }
 
-    const getCurrentCopyableBlock = (): CommandBlock | null => {
-      if (!currentBlock || alternateScreenActive || !currentBlock.output.trim()) {
+    const resolveVisibleCommandBlock = (): CommandBlockResolution => {
+      if (alternateScreenActive) {
+        return { kind: 'uncertain' }
+      }
+
+      if (isAtBottom() && currentBlock) {
+        return { kind: 'fallback', block: currentBlock }
+      }
+
+      const viewportTopLine = getViewportTopLine()
+
+      if (viewportTopLine === null) {
+        return { kind: 'uncertain' }
+      }
+
+      if (!commandBlocks.length) {
+        return { kind: 'uncertain' }
+      }
+
+      const bufferLength = getBufferLength()
+      const markerBackedBlocks: Array<{ block: CommandBlock, startLine: number, blockIndex: number }> = []
+
+      for (let blockIndex = 0; blockIndex < commandBlocks.length; blockIndex++) {
+        const block = commandBlocks[blockIndex]
+        const startLine = getMarkerLine(block.startMarker)
+
+        if (startLine === null) {
+          return { kind: 'uncertain' }
+        }
+
+        const previousStartLine = markerBackedBlocks[markerBackedBlocks.length - 1]?.startLine
+
+        if (previousStartLine !== undefined && startLine <= previousStartLine) {
+          return { kind: 'uncertain' }
+        }
+
+        markerBackedBlocks.push({ block, startLine, blockIndex })
+      }
+
+      for (let index = 0; index < markerBackedBlocks.length; index++) {
+        const range = markerBackedBlocks[index]
+        const nextRange = markerBackedBlocks[index + 1]
+        const endLine = nextRange?.startLine ?? (
+          range.blockIndex === commandBlocks.length - 1 ? bufferLength : null
+        )
+
+        if (endLine === null || endLine <= range.startLine) {
+          return { kind: 'uncertain' }
+        }
+
+        const rangeCrossesMarkerlessBlock = nextRange
+          ? nextRange.blockIndex > range.blockIndex + 1
+          : range.blockIndex !== commandBlocks.length - 1
+
+        if (rangeCrossesMarkerlessBlock && range.startLine <= viewportTopLine && viewportTopLine < endLine) {
+          return { kind: 'uncertain' }
+        }
+
+        if (range.startLine <= viewportTopLine && viewportTopLine < endLine) {
+          return { kind: 'block', block: range.block }
+        }
+      }
+
+      return { kind: 'uncertain' }
+    }
+
+    const getCopyableBlock = (): CommandBlock | null => {
+      const resolution = resolveVisibleCommandBlock()
+      const block = resolution.kind === 'uncertain' ? null : resolution.block
+
+      if (!block || !block.output.trim()) {
         return null
       }
 
-      return currentBlock
+      return block
     }
 
     const updateHeader = (): void => {
-      if (!lastCommand || alternateScreenActive || isAtBottom()) {
+      const resolution = resolveVisibleCommandBlock()
+      const block = resolution.kind === 'block' ? resolution.block : null
+
+      if (!block || alternateScreenActive || isAtBottom()) {
         header.style.display = 'none'
         return
       }
 
-      commandLabel.textContent = `Command: ${lastCommand}`
-      copyButton.style.display = getCurrentCopyableBlock() ? 'inline-block' : 'none'
+      commandLabel.textContent = `Command: ${block.command}`
+      copyButton.style.display = block.output.trim() ? 'inline-block' : 'none'
       header.style.display = 'flex'
     }
 
@@ -488,12 +669,10 @@ export class StickyCommandHeaderDecorator extends TerminalDecorator {
               output: '',
               active: true,
               truncated: false,
+              startMarker: registerBlockStartMarker(0),
             }
             commandBlocks.push(currentBlock)
-
-            if (commandBlocks.length > MAX_COMMAND_BLOCKS) {
-              commandBlocks = commandBlocks.slice(-MAX_COMMAND_BLOCKS)
-            }
+            trimCommandBlocks()
           }
 
           pendingInput = ''
@@ -528,6 +707,11 @@ export class StickyCommandHeaderDecorator extends TerminalDecorator {
       }
 
       text = text.replace(/\r\n/g, '\n')
+
+      if (!currentBlock.output && !currentBlock.startMarker) {
+        currentBlock.startMarker = registerBlockStartMarker(0)
+      }
+
       currentBlock.output += text
 
       if (currentBlock.output.length > MAX_OUTPUT_CHARS_PER_BLOCK) {
@@ -564,7 +748,7 @@ export class StickyCommandHeaderDecorator extends TerminalDecorator {
     }
 
     const copyCurrentOutput = async (): Promise<void> => {
-      const block = getCurrentCopyableBlock()
+      const block = getCopyableBlock()
 
       if (!block) {
         setStatus('No output')
@@ -636,7 +820,7 @@ export class StickyCommandHeaderDecorator extends TerminalDecorator {
         inputControlSequenceState = 'normal'
         outputControlSequenceState = 'normal'
         currentBlock = null
-        commandBlocks = []
+        clearCommandBlocks()
         lastCommand = ''
         attachCapture()
         updateHeader()
@@ -674,6 +858,7 @@ export class StickyCommandHeaderDecorator extends TerminalDecorator {
         statusTimeout = null
       }
 
+      clearCommandBlocks()
       copyButton.removeEventListener('click', handleCopyClick)
 
       if (viewport) {
